@@ -62,10 +62,19 @@ def cmd_list(store: BlockStore, args: argparse.Namespace) -> int:
 
 
 def cmd_show(store: BlockStore, args: argparse.Namespace) -> int:
+    start = end = None
+    if args.lines:
+        try:
+            lo, _, hi = args.lines.partition(":")
+            start = int(lo) if lo else None
+            end = int(hi) if hi else start
+        except ValueError:
+            raise HashtextError(f"invalid --lines {args.lines!r} (use START or START:END)")
     blocks = []
     for ref in args.refs:
         meta = store.resolve(ref)
-        blocks.append({**meta.to_json(), "text": store.load(meta)})
+        text = store.lines(ref, start, end) if args.lines else store.load(meta)
+        blocks.append({**meta.to_json(), "text": text})
     if args.json:
         _emit({"blocks": blocks}, True, "")
         return 0
@@ -80,6 +89,32 @@ def cmd_show(store: BlockStore, args: argparse.Namespace) -> int:
             sys.stdout.write(block["text"])
             if not block["text"].endswith("\n"):
                 print()
+    return 0
+
+
+def cmd_grep(store: BlockStore, args: argparse.Namespace) -> int:
+    matches = store.grep(
+        args.pattern,
+        refs=args.refs or None,
+        ignore_case=not args.case_sensitive,
+        max_matches=args.max,
+    )
+    text = "\n".join(
+        f"{m['ref']}:{m['line']}: {m['text']}" for m in matches
+    ) or "no matches"
+    _emit({"matches": matches, "count": len(matches)}, args.json, text)
+    return 0
+
+
+def cmd_gc(store: BlockStore, args: argparse.Namespace) -> int:
+    result = store.gc(dry_run=args.dry_run)
+    text = (
+        f"{'would remove' if result['dry_run'] else 'removed'}: "
+        f"{result['orphan_blobs']} orphan blobs, "
+        f"{result['dangling_meta']} dangling metadata, "
+        f"{result['temp_files']} stale temp files"
+    )
+    _emit({"gc": result}, args.json, text)
     return 0
 
 
@@ -135,8 +170,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     show = sub.add_parser("show", help="decompress and print one or more blocks")
     show.add_argument("refs", nargs="+", help="block refs (full sha256 or prefix)")
+    show.add_argument(
+        "--lines",
+        default=None,
+        help="line range: START or START:END (1-based, inclusive)",
+    )
     show.add_argument("--json", action="store_true", help="emit JSON")
     show.set_defaults(func=cmd_show)
+
+    grep = sub.add_parser("grep", help="regex search across blocks (line-addressed)")
+    grep.add_argument("pattern", help="regular expression")
+    grep.add_argument("--ref", dest="refs", action="append", help="limit to a block (repeatable)")
+    grep.add_argument("--case-sensitive", action="store_true", help="case-sensitive match")
+    grep.add_argument("--max", type=int, default=50, help="max matches (default 50)")
+    grep.add_argument("--json", action="store_true", help="emit JSON")
+    grep.set_defaults(func=cmd_grep)
+
+    gc = sub.add_parser("gc", help="remove orphan payloads, dangling metadata, stale temps")
+    gc.add_argument("--dry-run", action="store_true", help="report without deleting")
+    gc.add_argument("--json", action="store_true", help="emit JSON")
+    gc.set_defaults(func=cmd_gc)
 
     rm = sub.add_parser("rm", help="delete one or more blocks")
     rm.add_argument("refs", nargs="+", help="block refs (full sha256 or prefix)")

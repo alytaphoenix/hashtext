@@ -174,3 +174,54 @@ def test_env_dir_is_used(tmp_path, capsys, monkeypatch):
     code, out, _ = run(capsys, "put", "--json")
     assert code == 0
     assert (tmp_path / "envstore" / "blocks").is_dir()
+
+
+def test_show_lines(store_dir, capsys, monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.StringIO("l1\nl2\nl3\nl4\n"))
+    code, out, _ = run(capsys, "--dir", store_dir, "put", "--json")
+    ref = json.loads(out)["block"]["id"]
+
+    code, out, _ = run(capsys, "--dir", store_dir, "show", ref, "--lines", "2:3")
+    assert code == 0
+    assert out == "l2\nl3\n"
+
+    code, out, _ = run(capsys, "--dir", store_dir, "show", ref, "--lines", "2", "--json")
+    assert json.loads(out)["blocks"][0]["text"] == "l2\n"
+
+    code, out, err = run(capsys, "--dir", store_dir, "show", ref, "--lines", "bad")
+    assert code == 1
+    assert "invalid --lines" in err
+
+
+def test_grep_cli(store_dir, capsys, monkeypatch):
+    monkeypatch.setattr("sys.stdin", io.StringIO("ok\nERROR boom\n"))
+    code, out, _ = run(capsys, "--dir", store_dir, "put", "--json", "--name", "log")
+    ref = json.loads(out)["block"]["id"]
+
+    code, out, _ = run(capsys, "--dir", store_dir, "grep", "ERROR")
+    assert code == 0
+    assert f"{ref}:2: ERROR boom" in out
+
+    code, out, _ = run(capsys, "--dir", store_dir, "grep", "boom", "--json")
+    payload = json.loads(out)
+    assert payload["count"] == 1
+    assert payload["matches"][0]["line"] == 2
+    assert payload["matches"][0]["name"] == "log"
+
+    code, out, _ = run(capsys, "--dir", store_dir, "grep", "nomatch")
+    assert code == 0
+    assert "no matches" in out
+
+    code, out, err = run(capsys, "--dir", store_dir, "grep", "[")
+    assert code == 1
+    assert "invalid pattern" in err
+
+
+def test_gc_cli(store_dir, tmp_path, capsys):
+    code, out, _ = run(capsys, "--dir", store_dir, "gc", "--json")
+    assert code == 0
+    assert json.loads(out)["gc"]["orphan_blobs"] == 0
+
+    code, out, _ = run(capsys, "--dir", store_dir, "gc")
+    assert code == 0
+    assert "removed: 0 orphan blobs" in out

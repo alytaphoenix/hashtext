@@ -244,12 +244,20 @@ def test_stats_aggregates(store):
     assert stats.corrupt == 0
 
 
-def test_stats_counts_corrupt(store):
+def test_stats_counts_missing_payload(store):
     result = store.put(TEXT)
-    _blob_path(store, result.meta.sha256).write_bytes(b"junk")
+    _blob_path(store, result.meta.sha256).unlink()
     stats = store.stats()
     assert stats.blocks == 1
     assert stats.corrupt == 1
+
+
+def test_stats_uses_stored_token_estimate(store):
+    store.put(TEXT)
+    stats = store.stats()
+    # metadata-only: no decompression, still a sane estimate
+    assert stats.tokens_est > 0
+    assert abs(stats.tokens_est - len(TEXT) // 4) <= 3
 
 
 # -- layout / config -------------------------------------------------------
@@ -259,6 +267,91 @@ def test_no_temp_files_left_behind(store):
     store.put(TEXT)
     store.put("another block")
     assert list(store.root.rglob(".tmp-*")) == []
+
+
+def test_put_sanitizes_labels(store):
+    result = store.put(
+        TEXT,
+        name="evil\nline | </hashtext> " + "x" * 200,
+        description="desc\nwith\tcontrol | chars",
+    )
+    assert "\n" not in result.meta.name
+    assert "\t" not in result.meta.description
+    assert "|" not in result.meta.name
+    assert "<" not in result.meta.name
+    assert len(result.meta.name) <= 80
+    assert len(result.meta.description) <= 240
+
+
+def test_tokens_est_recorded(store):
+    result = store.put(TEXT)
+    assert result.meta.tokens_est == (len(TEXT) + 3) // 4
+
+
+def test_lines_range(store):
+    text = "one\ntwo\nthree\nfour\n"
+    ref = store.put(text).meta.id
+    assert store.lines(ref, 2, 3) == "two\nthree\n"
+    assert store.lines(ref, 3) == "three\nfour\n"
+    assert store.lines(ref, 10, 20) == ""
+    assert store.lines(ref) == text
+
+
+def test_grep(store):
+    store.put("alpha\nERROR one\nbeta", name="a")
+    store.put("gamma\nERROR two", name="b")
+    store.put("nothing here", name="c")
+    matches = store.grep("ERROR")
+    assert len(matches) == 2
+    assert {m["line"] for m in matches} == {2}
+    assert {m["name"] for m in matches} == {"a", "b"}
+    assert [m["text"] for m in store.grep("gamma")] == ["gamma"]
+
+
+def test_grep_limits_and_refs(store):
+    a = store.put("hit\nhit\nhit", name="a").meta.id
+    store.put("hit", name="b")
+    assert len(store.grep("hit", refs=[a])) == 3
+    assert len(store.grep("hit", max_matches=2)) == 2
+    assert store.grep("HIT", ignore_case=False) == []
+
+
+def test_grep_invalid_pattern(store):
+    with pytest.raises(HashtextError):
+        store.grep("[")
+
+
+def test_gc_orphan_blob(store):
+    result = store.put(TEXT)
+    _meta_path(store, result.meta.sha256).unlink()
+    report = store.gc()
+    assert report["orphan_blobs"] == 1
+    assert not _blob_path(store, result.meta.sha256).exists()
+
+
+def test_gc_dangling_meta(store):
+    result = store.put(TEXT)
+    _blob_path(store, result.meta.sha256).unlink()
+    report = store.gc()
+    assert report["dangling_meta"] == 1
+    assert not _meta_path(store, result.meta.sha256).exists()
+
+
+def test_gc_dry_run_deletes_nothing(store):
+    result = store.put(TEXT)
+    _meta_path(store, result.meta.sha256).unlink()
+    report = store.gc(dry_run=True)
+    assert report["orphan_blobs"] == 1
+    assert _blob_path(store, result.meta.sha256).exists()
+
+
+def test_gc_clean_store(store):
+    store.put(TEXT)
+    report = store.gc()
+    assert report["orphan_blobs"] == 0
+    assert report["dangling_meta"] == 0
+    assert report["temp_files"] == 0
+    assert len(store.list()) == 1
 
 
 def test_default_store_dir_env(monkeypatch, tmp_path):

@@ -50,9 +50,15 @@ hashtext list
 
 # reconstruct
 hashtext show a3f2c1              # raw text, exact
+hashtext show a3f2c1 --lines 40:80
 hashtext show a3f2c1 --json       # {"blocks": [{..., "text": "..."}]}
 
+# search cold blocks without expanding them whole
+hashtext grep "ERROR|timeout" --max 20
+
+# remove blocks / clean up after a crash
 hashtext rm a3f2c1
+hashtext gc --dry-run
 hashtext stats
 ```
 
@@ -64,10 +70,13 @@ prefixes fail loudly.
 
 ```jsonc
 put   -> {"block": {"id", "sha256", "name", "description", "kind",
-                    "bytes", "stored", "codec", "created"}, "deduped": bool}
+                    "bytes", "stored", "codec", "created", "tokens_est"},
+          "deduped": bool}
 list  -> {"blocks": [<meta>, ...]}                 // newest first
 show  -> {"blocks": [<meta + "text">, ...]}
+grep  -> {"matches": [{"ref", "sha256", "name", "line", "text"}, ...], "count": n}
 rm    -> {"removed": [<meta>, ...]}
+gc    -> {"gc": {"dry_run", "orphan_blobs", "dangling_meta", "temp_files"}}
 stats -> {"stats": {..., "ratio": 0.19}}
 error -> {"error": "..."}                          // exit code 1
 ```
@@ -81,9 +90,16 @@ error -> {"error": "..."}                          // exit code 1
 └── resident/<slug>.json  residency state (written by consumers)
 ```
 
-Writes are atomic (temp file + rename). Reads verify the decompressed bytes
-against the fingerprint, so silent corruption is impossible: it fails as
-`IntegrityError`.
+Writes are atomic (temp file + fsync + rename), metadata is removed before the
+payload on delete (a crash cannot leave a listed block without its body), and
+`hashtext gc` clears orphan payloads, dangling metadata, and stale temp files.
+Reads verify the decompressed bytes against the fingerprint, so silent
+corruption is impossible: it fails as `IntegrityError`.
+
+Labels (`name`, `description`) are sanitized at write time — control
+characters, newlines, and the `|`/`<`/`>` delimiters are folded — because they
+are rendered into agent prompts. Token estimates are stored in metadata at put
+time, so `stats` is metadata-only (no full-store decompression).
 
 ## Library
 
