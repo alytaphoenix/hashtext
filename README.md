@@ -101,6 +101,15 @@ characters, newlines, and the `|`/`<`/`>` delimiters are folded — because they
 are rendered into agent prompts. Token estimates are stored in metadata at put
 time, so `stats` is metadata-only (no full-store decompression).
 
+## Shared with context-hydra (MCP)
+
+The same on-disk format is implemented by `context-hydra`'s Rust block backend
+(`src/blocks.rs`): sha256 ids, zstd payloads with the content size in the frame
+header, sharded `blocks/` layout. Point both tools at one `HASHTEXT_DIR` and the
+`hashtext` CLI, the forseti pi extension, and an MCP client share one body
+store. Hydra's `cargo test` cross-checks writes and reads against this CLI in
+both directions.
+
 ## Library
 
 ```python
